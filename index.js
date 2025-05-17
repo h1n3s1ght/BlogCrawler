@@ -6,8 +6,10 @@ const path = require('path');
 const dayjs = require('dayjs');
 const cliProgress = require('cli-progress');
 const { createObjectCsvWriter } = require('csv-writer');
+const { wrapper } = require('axios-cookiejar-support');
+const tough = require('tough-cookie');
 
-const blogIndexUrl = 'https://www.solveltd.com/blog';
+const blogIndexUrl = 'https://www.creativeresources.net/category/tech-blog/';
 const MAX_PAGES_TO_CRAWL = 10;
 
 function extractRootDomain(url) {
@@ -29,26 +31,66 @@ async function extractBlogLinks(indexUrls) {
     visited.add(currentUrl);
     pagesCrawled++;
 
-    try {
-      const res = await axios.get(currentUrl);
-      const $ = cheerio.load(res.data);
+    let res;
 
-      $('main a[href], #main a[href], article a[href], .post-list a[href]').each((_, el) => {
-        const href = $(el).attr('href');
-        if (!href) return;
-        const fullUrl = new URL(href, currentUrl).toString();
-        // Skip the index page itself
-        if (fullUrl === blogIndexUrl || fullUrl === blogIndexUrl + '/') return;
-        if (/\/blog\//.test(fullUrl)) links.add(fullUrl);
-      });
+    try {
+      if (currentUrl.includes('.preview.octanesites.com')) {
+        const jar = new tough.CookieJar();
+        const client = wrapper(axios.create({ jar }));
+        const loginUrl = new URL(currentUrl).origin;
+
+        await client.post(loginUrl, new URLSearchParams({ password: 'takealook' }).toString(), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0'
+          }
+        });
+
+        res = await client.get(currentUrl);
+        console.log(`🔓 Authenticated and loaded blog index: ${currentUrl}`);
+
+        if (res.data.includes('Site Preview') && res.data.includes('Password')) {
+          console.warn(`⚠️ Still seeing login page at index URL — may have failed auth: ${currentUrl}`);
+        }
+      } else {
+        res = await axios.get(currentUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        console.log(`🌐 Publicly loaded blog index: ${currentUrl}`);
+      }
+
+      const $ = cheerio.load(res.data);
 
       $('a[href]').each((_, el) => {
         const href = $(el).attr('href');
-        if (href && /page\/(\d+)/.test(href)) {
-          const fullUrl = new URL(href, currentUrl).toString();
-          if (!visited.has(fullUrl)) toVisit.push(fullUrl);
+        if (!href) return;
+
+        const fullUrl = new URL(href, currentUrl).toString();
+        if (fullUrl === blogIndexUrl || fullUrl === blogIndexUrl + '/') return;
+
+        // Skip non-HTML files and category/tag links
+        if (/\.(jpg|jpeg|png|gif|svg|css|js)$/i.test(fullUrl)) return;
+        if (fullUrl.includes('/category/') || fullUrl.includes('/tag/') || fullUrl.includes('?')) return;
+
+        const isPreview = currentUrl.includes('.preview.octanesites.com');
+
+        if (isPreview) {
+          if (/\/blog\//.test(fullUrl)) links.add(fullUrl);
+        } else {
+          if (!visited.has(fullUrl) && !toVisit.includes(fullUrl) && /^https?:\/\/.+\/.+/.test(fullUrl)) {
+            links.add(fullUrl);
+          }
+        }
+
+        // Also check for pagination
+        if (/\?.*p=\d+/.test(href)) {
+          const pagedUrl = new URL(href, currentUrl).origin + new URL(href, currentUrl).pathname + new URL(href, currentUrl).search;
+          if (!visited.has(pagedUrl) && !toVisit.includes(pagedUrl)) {
+            toVisit.push(pagedUrl);
+          }
         }
       });
+
     } catch (e) {
       console.log(`⚠️ Failed to crawl page: ${currentUrl}`);
     }
@@ -78,9 +120,32 @@ function isNoIndexed($) {
   return $('meta[name="robots"]').attr('content')?.includes('noindex') || false;
 }
 
-async function parseBlogPage(url, retryCount = 0) {
+async function parseBlogPage(url, retryCount = 0, bar) {
   try {
-    const res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    let res;
+    const isPreview = url.includes('.preview.octanesites.com');
+
+    if (isPreview) {
+      const jar = new tough.CookieJar();
+      const client = wrapper(axios.create({ jar }));
+
+      const loginUrl = new URL(url).origin;
+
+      await client.post(loginUrl, new URLSearchParams({ password: 'takealook' }).toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'Mozilla/5.0'
+        }
+      });
+
+      res = await client.get(url);
+
+      if (res.data.includes('Site Preview') && res.data.includes('Password')) {
+      }
+    } else {
+      res = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    }
+
     const $ = cheerio.load(res.data);
 
     const pagetitle = $('meta[property="og:title"]').attr('content') || $('h1').first().text().trim();
@@ -157,15 +222,28 @@ async function runCrawler(indexUrl) {
 
   const records = [];
   const seenTitles = new Set();
-  const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
+  const bar = new cliProgress.SingleBar({
+    format: 'Crawling [{bar}] {percentage}% | ETA: {eta_formatted} | {value}/{total}',
+    formatValue: (v, _, type) => {
+      if (type === 'eta_formatted') {
+        const minutes = Math.floor(v / 60);
+        const seconds = Math.floor(v % 60);
+        return `${minutes}m ${seconds}s`;
+      }
+      return v;
+    }
+  }, cliProgress.Presets.shades_classic);
+
   bar.start(uniqueUrls.length, 0);
 
   for (let i = 0; i < uniqueUrls.length; i++) {
-    const data = await parseBlogPage(uniqueUrls[i]);
+    const data = await parseBlogPage(uniqueUrls[i], 0, bar);
     if (!seenTitles.has(data.pagetitle) && data.pagetitle) {
       seenTitles.add(data.pagetitle);
       records.push(data);
     }
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
     bar.update(i + 1);
   }
 
