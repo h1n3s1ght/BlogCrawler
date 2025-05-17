@@ -1,0 +1,12 @@
+Comparison Summary - 2025-05-17T22-13-07-819Z
+=========================================
+✅ Matched Titles (removed): 4
+❌ Unmatched Titles (to migrate): 37
+🆕 New Site Titles not found on Old Site: 6
+
+Matched Blog Titles:
+---------------------
+"a rising threat every mac-based business owner needs to take seriously: bec attacks on mac systems" = "a rising threat every business owner needs to take seriously" ... These were found to be a match by "4 words in a row"
+"cybercriminals love tax season – here’s how to protect your mac-based business" = "cybercriminals love tax season – here’s how to protect your business" ... These were found to be a match by "4 words in a row"
+"how central texas & southern california mac-based business owners can eliminate costly tech problems immediately" = "how business owners can eliminate costly tech problems immediately" ... These were found to be a match by "9 word threshold"
+"spring-clean your computer network" = "spring-clean your computer network" ... These were found to be a match by "exact match"
